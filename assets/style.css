@@ -548,3 +548,37 @@ button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
 }
 .fgrid label{display:block}
 .fgrid label input,.fgrid label select,.fgrid label textarea{margin-top:6px}
+/* --- 행사 이야기 (tools/make_pages.py 가 만드는 stories/) --- */
+.sto-more{margin-top:32px;text-align:center}
+.story{display:grid;grid-template-columns:320px minmax(0,1fr);gap:56px;align-items:start}
+.story aside{position:sticky;top:calc(var(--hd) + 24px);background:var(--wine-l);border-radius:var(--r);padding:28px 26px}
+.story dl{margin:14px 0 22px}
+.story dt{font-size:13px;font-weight:800;color:var(--wine);margin-top:14px}
+.story dd{font-weight:700;line-height:1.5;margin-top:2px}
+.story aside .btn{width:100%;white-space:normal;text-align:center}
+.sbody p{font-size:18px;line-height:1.85;color:var(--g8);margin-bottom:18px}
+.sgrid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:30px 0 12px}
+.sgrid a:first-child,.sgrid a:nth-child(even):last-child{grid-column:1/-1}
+.sgrid img{width:100%;height:auto;aspect-ratio:4/3;object-fit:cover;border-radius:var(--r-s);background:var(--g1)}
+.snote{font-size:14px;color:var(--g6);margin:12px 0 22px}
+.snote a{color:var(--wine);font-weight:700;text-decoration:underline}
+.sbtns{display:flex;flex-wrap:wrap;gap:10px}
+.scards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}
+.scards.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+.scards.four .scard span{font-size:16px}
+.scard{display:flex;flex-direction:column;border-radius:var(--r);overflow:hidden;background:#fff;border:1px solid var(--g2);transition:transform .25s,box-shadow .25s,border-color .25s}
+.scard:hover{border-color:var(--wine-m);box-shadow:var(--sh-s);transform:translateY(-3px)}
+.scard img{width:100%;height:auto;aspect-ratio:4/3;object-fit:cover;background:var(--g1)}
+.scard span{display:flex;flex-direction:column;gap:8px;padding:18px 20px 22px;font-weight:800;font-size:18px;line-height:1.45}
+.scard small{font-size:13px;font-weight:800;color:var(--wine)}
+.scard em{font-style:normal;font-weight:500;font-size:15px;line-height:1.6;color:var(--g6)}
+@media (max-width:900px){
+  .story{grid-template-columns:1fr;gap:32px}
+  .story aside{position:static;order:2}
+  .scards,.scards.four{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:640px){
+  .scards,.scards.four{grid-template-columns:1fr}
+  .sbody p{font-size:17px}
+  .sbtns .btn{flex:1 1 100%}
+}
