@@ -9,7 +9,7 @@
   /* ---------- 문의 폼 전송처 ----------
      FORM_ENDPOINT 가 비어 있으면 휴대폰에서는 문자 앱이 열리고, PC 에서는 내용을 복사해 준다.
      문의 서버(Apps Script) 주소를 넣으면 그쪽으로 JSON 이 가고 대표 메일로 전달된다. */
-  var FORM_ENDPOINT = '';
+  var FORM_ENDPOINT = 'https://script.google.com/macros/s/AKfycbwvQ4UJRZklRX7bZB6C0s1yZgSvBAMCVccT580L_1BtiVDyh0DIxShCAvN9McZIB0b7FA/exec';
   var SMS_TO = '010-3057-4863';
   var COMPANY = '이벤투스';
 
