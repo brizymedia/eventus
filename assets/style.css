@@ -669,3 +669,6 @@ button{font:inherit;cursor:pointer;border:0;background:none;color:inherit}
 .sig p{margin:8px 22px 0;color:var(--g7);font-size:15px;line-height:1.6}
 @media (max-width:900px){.sig{grid-template-columns:1fr 1fr}}
 @media (max-width:640px){.sig{grid-template-columns:1fr}.why.pics li .big{font-size:32px}}
+
+/* 2026-11-02 문의 보내는 중 */
+.btn.send:disabled{opacity:.6;cursor:wait}

@@ -285,7 +285,10 @@
   function send(text, data, done) {
     if (FORM_ENDPOINT) {
       data.at = new Date().toISOString(); data.page = location.href; data.service = '[이벤투스] 영어행사 문의'; data.message = text;
-      fetch(FORM_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(data) }).catch(function () {}).then(function () { done(true); });
+      // 구글 서버 응답이 몇 초 걸린다 — 기다리다 다시 누르면 메일이 여러 통 가므로, 늦어도 4초 뒤엔 완료로 보여 준다
+      var fin = false; function end() { if (!fin) { fin = true; done(true); } }
+      fetch(FORM_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify(data) }).catch(function () {}).then(end);
+      setTimeout(end, 4000);
       return;
     }
     if (isMobile()) { var ios = /iPhone|iPad/i.test(navigator.userAgent); location.href = 'sms:' + SMS_TO + (ios ? '&' : '?') + 'body=' + encodeURIComponent(text); done(true); return; }
@@ -294,20 +297,24 @@
   }
   var form = $('#askForm');
   if (form) {
-    var done = $('#formDone');
+    var done = $('#formDone'), btn = $('button[type="submit"]', form), btnHTML = btn ? btn.innerHTML : '', sending = false;
     form.addEventListener('submit', function (e) {
       e.preventDefault();
+      if (sending) return; // 보내는 중에 또 누른 것 — 한 번만 보낸다
       if (form.elements.website && form.elements.website.value) return; // 스팸 봇 함정
       var d = {}; ['name', 'tel', 'email', 'org', 'type', 'date', 'place', 'people', 'lang', 'msg'].forEach(function (k) { d[k] = form.elements[k] ? form.elements[k].value.trim() : ''; });
       if (!d.name || !d.tel) { alert('담당자 이름과 연락처는 꼭 적어 주세요.'); (d.name ? form.elements.tel : form.elements.name).focus(); return; }
       if (!$('#fAgree').checked) { alert('개인정보 수집 · 이용에 동의해 주세요.'); return; }
       var text = '[' + COMPANY + ' 영어행사 문의]\n담당자: ' + d.name + '\n연락처: ' + d.tel + (d.email ? '\n이메일: ' + d.email : '') + '\n회사 · 기관: ' + (d.org || '-') + '\n행사 종류: ' + d.type + '\n진행 언어: ' + d.lang + '\n날짜: ' + (d.date || '-') + '\n장소: ' + (d.place || '-') + '\n인원: ' + (d.people || '-') + '\n내용: ' + (d.msg || '-');
+      sending = true;
+      if (btn) { btn.disabled = true; btn.textContent = '보내는 중…'; }
       send(text, d, function (sent) {
         done.classList.add('on');
+        try { done.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (er) { done.scrollIntoView(); }
         if (!sent) $('p', done).innerHTML = '문의 내용을 복사해 두었습니다.<br><b>' + SMS_TO + '</b> 로 문자 · 전화 주시거나<br>카카오톡 1:1 상담에 붙여 넣어 주세요.';
       });
     });
-    var again = $('#formAgain'); if (again) again.addEventListener('click', function () { done.classList.remove('on'); form.reset(); });
+    var again = $('#formAgain'); if (again) again.addEventListener('click', function () { done.classList.remove('on'); form.reset(); sending = false; if (btn) { btn.disabled = false; btn.innerHTML = btnHTML; } });
   }
 
   onScroll();
