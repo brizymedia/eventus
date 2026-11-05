@@ -1,0 +1,36 @@
+{
+ "updated": "",
+ "categories": [
+  {
+   "slug": "team",
+   "name": "팀빌딩 · 오징어게임",
+   "desc": "",
+   "count": 0
+  },
+  {
+   "slug": "party",
+   "name": "송년회 · 파티",
+   "desc": "",
+   "count": 0
+  },
+  {
+   "slug": "rec",
+   "name": "레크레이션 · MC",
+   "desc": "",
+   "count": 0
+  },
+  {
+   "slug": "sport",
+   "name": "체육대회 · 운동회",
+   "desc": "",
+   "count": 0
+  },
+  {
+   "slug": "gear",
+   "name": "세팅 · 장비",
+   "desc": "",
+   "count": 0
+  }
+ ],
+ "photos": []
+}
