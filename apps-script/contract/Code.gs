@@ -1,0 +1,537 @@
+/**
+ * 이벤투스 — 전자계약 서버 (큰길이벤트기획 계약 서버를 옮긴 것) (Google Apps Script)
+ *
+ * contract.html 이 호출하는 백엔드.
+ *   POST {action:'store', contract, hash}      → 계약서 저장, 짧은 ID 발급
+ *   GET  ?id=ID                                → 계약서 조회 (고객 화면이 불러옴)
+ *   POST {action:'sign', id, contract, sig, signer, ts, hash, html, to, subject}
+ *                                              → 서명 접수, PDF 생성, 드라이브 저장, 양측 메일, 대장 기록
+ *   POST {action:'ping'}                       → 상태 확인
+ *
+ *   견적서 보관함 (quote.html 이 부른다 — 폰과 PC 가 같은 목록을 본다)
+ *   POST {action:'boxList', pw, 목록?}          → 보관함 목록. 목록을 같이 보내면 합친 뒤 돌려준다
+ *   POST {action:'boxPut',  pw, 항목}           → 견적서 하나 담기 (같은 코드는 새것으로 바뀐다)
+ *   POST {action:'boxDel',  pw, 코드}           → 견적서 하나 빼기
+ *
+ *   행사 일정 · 체크리스트 (schedule.html — 대표님과 직원이 같이 본다)
+ *   POST {action:'schedList',  pw}                        → 행사 전부
+ *   POST {action:'schedSave',  pw, 행사, 누가}            → 행사 하나 만들기/고치기
+ *   POST {action:'schedCheck', pw, id, 항목, 됨, 누가}    → 품목 하나 체크만 (서로 안 덮어쓰게)
+ *   POST {action:'schedDel',   pw, id}                    → 행사 하나 지우기
+ *
+ * 설치 방법은 README.md 참고.
+ */
+
+// ── 설정 ────────────────────────────────────────────────
+const ROOT_FOLDER_NAME = '이벤투스 계약서';   // 내 드라이브에 자동 생성
+const SHEET_NAME       = '계약 대장';               // 루트 폴더 안에 자동 생성되는 스프레드시트 이름
+const COMPANY_NAME     = '이벤투스';
+const COMPANY_EMAIL    = 'sh712@daum.net';    // 서명본 사본을 항상 받을 주소 (계약서의 co.email 과 별개로 무조건 수신)
+const MANAGER_EMAIL    = 'gilauto325@gmail.com'; // 관리하는 큰길브리지도 사본을 받는다 (빼려면 '' )
+const ALLOW_RESIGN     = false;                     // true 면 이미 서명된 계약에 다시 서명 허용
+const BOX_FILE         = '견적서-보관함.json';       // 보관함 파일 (위 폴더의 _data 안)
+const BOX_MAX          = 300;                       // 보관함에 둘 견적서 수
+const BOX_MAIL_EVERY   = 10 * 60 * 1000;            // 목록을 열 때 10분이 지났으면 보낸 견적 메일을 다시 모은다
+const SCHED_FILE       = '행사일정.json';            // 행사 일정 (위 폴더의 _data 안)
+const SCHED_MAX        = 300;                       // 보관할 행사 수
+const VERSION          = '2026-10-13a';             // 배포 확인용 — 고칠 때마다 올린다
+
+// ── 진입점 ──────────────────────────────────────────────
+function doGet(e) {
+  const p = (e && e.parameter) || {};
+  if (p.id) return json_(getContract_(p.id));
+  return json_({ ok: true, service: 'eventus-contract', version: VERSION, box: boxPw_() ? 'ready' : 'no-pw', sched: crewPw_() ? 'ready' : 'no-pw', time: new Date().toISOString() });
+}
+
+function doPost(e) {
+  let body = {};
+  try { body = JSON.parse(e.postData.contents || '{}'); }
+  catch (err) { return json_({ ok: false, error: '잘못된 요청 형식' }); }
+
+  const lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(20000);
+    switch (body.action) {
+      case 'ping':  return json_({ ok: true, version: 1 });
+      case 'store': return json_(storeContract_(body));
+      case 'sign':  return json_(signContract_(body));
+      case 'boxList': return json_(boxList_(body));
+      case 'boxPut':  return json_(boxPut_(body));
+      case 'boxDel':  return json_(boxDel_(body));
+      case 'schedList':  return json_(schedList_(body));
+      case 'schedSave':  return json_(schedSave_(body));
+      case 'schedCheck': return json_(schedCheck_(body));
+      case 'schedDel':   return json_(schedDel_(body));
+      default:      return json_({ ok: false, error: '알 수 없는 action' });
+    }
+  } catch (err) {
+    return json_({ ok: false, error: String(err && err.message || err) });
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// ── 저장 / 조회 ─────────────────────────────────────────
+function storeContract_(body) {
+  const contract = body.contract;
+  if (!contract || !contract.ev || !contract.cl) throw new Error('계약 내용이 비어 있습니다');
+  const id = newId_();
+  const rec = { id, status: 'pending', createdAt: new Date().toISOString(), hash: body.hash || '', contract };
+  dataFolder_().createFile(id + '.json', JSON.stringify(rec), 'application/json');
+  appendLog_({ id, status: '발송', contract, hash: rec.hash });
+  return { ok: true, id };
+}
+
+function getContract_(id) {
+  const rec = readRecord_(id);
+  if (!rec) return { ok: false, error: '계약서를 찾을 수 없습니다' };
+  const out = { ok: true, id: rec.id, status: rec.status, contract: rec.contract, hash: rec.hash };
+  if (rec.status === 'signed') {
+    out.signedAt = rec.signedAt; out.signer = rec.signer; out.pdfUrl = rec.pdfUrl; out.sig = rec.sig || '';
+  }
+  return out;
+}
+
+// ── 서명 ────────────────────────────────────────────────
+function signContract_(body) {
+  const contract = body.contract;
+  if (!contract) throw new Error('계약 내용이 없습니다');
+  if (!body.sig || String(body.sig).indexOf('data:image/png;base64,') !== 0) throw new Error('서명 이미지가 없습니다');
+  if (!body.signer || !body.signer.name) throw new Error('서명자 이름이 없습니다');
+
+  let id = String(body.id || '').trim();
+  let rec = id ? readRecord_(id) : null;
+  if (rec && rec.status === 'signed' && !ALLOW_RESIGN) {
+    return { ok: true, id: rec.id, pdfUrl: rec.pdfUrl, already: true };
+  }
+  if (!rec) { id = newId_(); rec = { id, status: 'pending', createdAt: new Date().toISOString(), contract }; }
+
+  // 문서 확인 코드 재계산 (클라이언트가 보낸 hash 와 비교 → 기록)
+  const serverHash = sha256_(JSON.stringify(stripApi_(contract)));
+  const hashMatch  = !body.hash || body.hash === serverHash;
+
+  const ts     = body.ts || new Date().toISOString();
+  const title  = safe_(contract.ev && contract.ev.title) || '행사';
+  const org    = safe_(contract.cl && contract.cl.org)   || '고객';
+  const no     = safe_(contract.no) || id;
+  const total  = calcTotal_(contract);
+
+  // PDF 생성 (클라이언트가 렌더한 HTML 그대로 → PDF)
+  const html   = String(body.html || '');
+  const pdfName = ('계약서_' + no + '_' + org + '_' + title).replace(/[\\/:*?"<>|]/g, '_').slice(0, 120) + '.pdf';
+  const year   = new Date().getFullYear();
+  const folder = subFolder_(rootFolder_(), String(year));
+  let pdfFile, pdfUrl = '';
+  if (html) {
+    const blob = Utilities.newBlob(html, 'text/html', pdfName.replace(/\.pdf$/, '.html')).getAs('application/pdf');
+    blob.setName(pdfName);
+    pdfFile = folder.createFile(blob);
+    pdfFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    pdfUrl = pdfFile.getUrl();
+  }
+  // 서명 이미지 원본도 보관
+  const sigBytes = Utilities.base64Decode(String(body.sig).split(',')[1]);
+  folder.createFile(Utilities.newBlob(sigBytes, 'image/png', ('서명_' + no + '_' + safe_(body.signer.name) + '.png')));
+
+  // 레코드 갱신
+  rec.status   = 'signed';
+  rec.signedAt = ts;
+  rec.signer   = { name: body.signer.name, tel: body.signer.tel || '', email: body.signer.email || '' };
+  rec.hash     = serverHash;
+  rec.clientHash = body.hash || '';
+  rec.hashMatch  = hashMatch;
+  rec.ua       = body.ua || '';
+  rec.tz       = body.tz || '';
+  rec.pdfUrl   = pdfUrl;
+  rec.pdfId    = pdfFile ? pdfFile.getId() : '';
+  rec.sig      = body.sig;         // 재열람 시 서명 표시용
+  rec.contract = contract;
+  writeRecord_(rec);
+
+  // 메일 발송
+  const to = body.to || {};
+  const recipients = uniq_([COMPANY_EMAIL, MANAGER_EMAIL, to.company, to.customer, rec.signer.email].filter(isEmail_));
+  const subject = body.subject || ('[' + COMPANY_NAME + '] 전자계약 체결 완료 — ' + title);
+  const text = [
+    '전자계약이 체결되었습니다.', '',
+    '계약번호 : ' + no,
+    '행사명   : ' + title,
+    '계약자   : ' + org + ' / ' + rec.signer.name + (rec.signer.tel ? ' (' + rec.signer.tel + ')' : ''),
+    '계약금액 : ' + total.toLocaleString('ko-KR') + '원 (부가세 포함)',
+    '서명시각 : ' + kst_(ts) + ' (KST)',
+    '문서확인 : ' + serverHash.slice(0, 32) + '…' + (hashMatch ? '' : '  ※ 클라이언트 해시 불일치'),
+    '',
+    pdfUrl ? '계약서 PDF : ' + pdfUrl : '(PDF 생성 안 됨)',
+    '',
+    '첨부된 PDF 를 보관해 주세요. 본 메일은 ' + COMPANY_NAME + ' 전자계약 시스템에서 자동 발송되었습니다.',
+    COMPANY_NAME + ' · ' + safe_(contract.co && contract.co.tel) + ' · ' + safe_(contract.co && contract.co.email),
+  ].join('\n');
+  try {
+    MailApp.sendEmail({ to: recipients.join(','), subject, body: text, name: COMPANY_NAME,
+      attachments: pdfFile ? [pdfFile.getBlob()] : [] });
+  } catch (err) {
+    // 메일 실패해도 계약 자체는 성립 — 로그에 남김
+    rec.mailError = String(err && err.message || err); writeRecord_(rec);
+  }
+
+  appendLog_({ id, status: '서명완료', contract, hash: serverHash, signer: rec.signer, signedAt: ts, pdfUrl, hashMatch });
+  return { ok: true, id, pdfUrl, hash: serverHash, hashMatch, mailedTo: recipients };
+}
+
+// ── 대장(스프레드시트) ────────────────────────────────────
+function appendLog_(o) {
+  const ss = logSheet_();
+  const c = o.contract || {}; const t = calcTotal_(c);
+  ss.appendRow([
+    new Date(), o.id, o.status,
+    safe_(c.no), safe_(c.ev && c.ev.title), safe_(c.ev && c.ev.date), safe_(c.ev && c.ev.place),
+    safe_(c.cl && c.cl.org), safe_(c.cl && c.cl.name), safe_(c.cl && c.cl.tel), safe_(c.cl && c.cl.email),
+    t, o.signer ? safe_(o.signer.name) : '', o.signedAt || '', o.pdfUrl || '', o.hash || '', o.hashMatch === false ? '불일치' : '',
+  ]);
+}
+function logSheet_() {
+  const root = rootFolder_();
+  const it = root.getFilesByType(MimeType.GOOGLE_SHEETS);
+  let file = null;
+  while (it.hasNext()) { const f = it.next(); if (f.getName() === SHEET_NAME) { file = f; break; } }
+  let ss;
+  if (file) ss = SpreadsheetApp.open(file);
+  else {
+    ss = SpreadsheetApp.create(SHEET_NAME);
+    DriveApp.getFileById(ss.getId()).moveTo(root);
+    const sh = ss.getActiveSheet(); sh.setName('대장');
+    sh.appendRow(['기록시각','문서ID','상태','계약번호','행사명','행사일','장소','갑 단체','갑 담당자','연락처','이메일','계약금액','서명자','서명시각','PDF','문서확인코드','비고']);
+    sh.setFrozenRows(1); sh.getRange(1,1,1,17).setFontWeight('bold').setBackground('#F5F3EE');
+  }
+  return ss.getSheets()[0];
+}
+
+// ── 견적서 보관함 ─────────────────────────────────────────
+// 견적서는 서버에 저장할 것이 없다. 주소 안에 통째로 담기는 짧은 코드 하나가 견적서다.
+// 그 코드와 제목 · 고객 · 금액만 한 파일에 모아 두면, 폰에서 담은 것을 PC 에서도 볼 수 있다.
+// 암호는 코드에 적지 않는다 — 프로젝트 설정 → 스크립트 속성에 BOX_PW 로 넣는다.
+function boxPw_() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('BOX_PW') || ''); }
+  catch (e) { return ''; }
+}
+function boxCheck_(pw) {
+  const 참 = boxPw_();
+  if (!참) throw new Error('보관함 암호가 아직 설정되지 않았습니다 (스크립트 속성 BOX_PW)');
+  if (String(pw || '') !== 참) throw new Error('암호가 맞지 않습니다');
+}
+function boxRead_() {
+  const it = dataFolder_().getFilesByName(BOX_FILE);
+  if (!it.hasNext()) return [];
+  try {
+    const v = JSON.parse(it.next().getBlob().getDataAsString());
+    return Array.isArray(v) ? v : [];
+  } catch (e) { return []; }
+}
+function boxWrite_(목록) {
+  const 자른 = boxSort_(목록).slice(0, BOX_MAX);
+  const s = JSON.stringify(자른);
+  const it = dataFolder_().getFilesByName(BOX_FILE);
+  if (it.hasNext()) it.next().setContent(s);
+  else dataFolder_().createFile(BOX_FILE, s, 'application/json');
+  return 자른;
+}
+function boxSort_(목록) { return 목록.slice().sort((a, b) => (+b.때 || 0) - (+a.때 || 0)); }
+
+/* 들어온 항목을 쓸 만한 것만 남기고 다듬는다 */
+function boxClean_(q) {
+  if (!q || typeof q !== 'object') return null;
+  const 코드 = String(q.코드 || '');
+  if (!코드 || 코드.length > 20000) return null;
+  const 짧게 = (v, n) => String(v == null ? '' : v).slice(0, n);
+  return {
+    코드: 코드,
+    제목:   짧게(q.제목, 120),
+    고객:   짧게(q.고객, 120),
+    행사일: 짧게(q.행사일, 40),
+    금액:   짧게(q.금액, 40),
+    항목:   Math.max(0, Math.min(999, parseInt(q.항목, 10) || 0)),
+    때:     Math.max(0, parseInt(q.때, 10) || Date.now()),
+  };
+}
+
+/* 같은 견적서(코드가 같은 것)는 하나만 — 나중에 담은 것을 남긴다 */
+function boxMerge_(목록, q) {
+  const 새것 = boxClean_(q);
+  if (!새것) return 목록;
+  const i = 목록.findIndex(x => x && x.코드 === 새것.코드);
+  if (i < 0) { 목록.push(새것); return 목록; }
+  if ((+목록[i].때 || 0) <= 새것.때) 목록[i] = 새것;
+  return 목록;
+}
+
+function boxList_(body) {
+  boxCheck_(body.pw);
+  /* 보낸 견적 메일을 먼저 모은다. 메일 읽기 권한이 아직 없으면 그냥 넘어간다 */
+  try { boxSyncMail_(false); } catch (e) {}
+  let 목록 = boxRead_();
+  const 들어온 = Array.isArray(body.목록) ? body.목록.slice(0, BOX_MAX) : [];
+  if (들어온.length) {
+    들어온.forEach(q => { 목록 = boxMerge_(목록, q); });
+    return { ok: true, 목록: boxWrite_(목록) };
+  }
+  return { ok: true, 목록: boxSort_(목록) };
+}
+function boxPut_(body) {
+  boxCheck_(body.pw);
+  const 새것 = boxClean_(body.항목);
+  if (!새것) throw new Error('담을 견적서가 비어 있습니다');
+  return { ok: true, 목록: boxWrite_(boxMerge_(boxRead_(), 새것)) };
+}
+function boxDel_(body) {
+  boxCheck_(body.pw);
+  const 코드 = String(body.코드 || '');
+  if (!코드) throw new Error('뺄 견적서를 알 수 없습니다');
+  return { ok: true, 목록: boxWrite_(boxRead_().filter(x => x && x.코드 !== 코드)) };
+}
+
+// ── 보낸 견적 메일에서 보관함 채우기 ──────────────────────
+// 견적서를 메일로 보내면 본문 「견적서 온라인으로 보기」 링크에 견적서 원본(#q= 코드)이 통째로 들어간다.
+// 보낸편지함에서 그 링크를 모아 보관함에 넣는다 — 「담기」를 안 눌러도 보낸 견적은 다 남는다.
+// 답장(Re:)은 빼고 「[큰길이벤트기획] … 견적서」 원본만 본다. 같은 견적서는 하나로 합친다.
+function boxFromMail_() {
+  const 나 = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
+  const 스레드 = GmailApp.search('in:sent "견적서 온라인으로 보기"', 0, 300);
+  const 모은 = [];
+  스레드.forEach((t) => t.getMessages().forEach((m) => {
+    if (나 && String(m.getFrom()).toLowerCase().indexOf(나) < 0) return;
+    if (!/^\[큰길이벤트기획\]/.test(String(m.getSubject()))) return;
+    const 찾음 = String(m.getPlainBody()).match(/quote\.html\?sent=1#q=([A-Za-z0-9_-]+)/);
+    if (!찾음) return;
+    const 항목 = boxFromCode_(찾음[1], m.getDate().getTime());
+    if (항목) 모은.push(항목);
+  }));
+  return 모은;
+}
+
+/* 견적 코드 하나를 보관함 한 줄로 — 회사 · 이름 · 전화, 행사명 · 행사일, 합계(부가세 포함) */
+function boxFromCode_(코드, 때) {
+  try {
+    let b = String(코드);
+    while (b.length % 4) b += '=';
+    const s = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(b)).getDataAsString('UTF-8'));
+    const 칸 = ['org','name','tel','email','title','date','place','people','memo'];
+    const 짧게 = { org:'o', name:'n', tel:'t', email:'e', title:'m', date:'d', place:'p', people:'c', memo:'x' };
+    const 정보 = {};
+    칸.forEach((k, i) => {
+      const v = !s.i ? '' : Array.isArray(s.i) ? s.i[i] : (s.i[짧게[k]] != null ? s.i[짧게[k]] : s.i[k]);
+      정보[k] = v == null ? '' : String(v);
+    });
+    let 공급 = 0;
+    const 줄들 = s.r || [];
+    줄들.forEach((a) => {
+      if (typeof a === 'string') return;                  /* 단가 협의 */
+      const q = a.length <= 4 ? (a[1] != null ? a[1] : 1) : a[3];
+      const d = a.length <= 4 ? (a[2] != null ? a[2] : 1) : a[5];
+      const p = a.length <= 4 ? a[3] : a[6];
+      if (p == null || p === '') return;
+      공급 += (+q || 0) * (+d || 0) * (+p || 0);
+    });
+    const 기준 = Math.max(0, 공급 - (+s.d || 0));
+    const 합계 = 기준 + Math.round(기준 * 0.1);
+    return {
+      코드: String(코드),
+      제목: 정보.title,
+      고객: [정보.org, 정보.name, 정보.tel].filter(Boolean).join(' · '),
+      행사일: 정보.date,
+      금액: String(합계).replace(/\B(?=(\d{3})+(?!\d))/g, ',') + ' 원',
+      항목: 줄들.length,
+      때: 때 || Date.now(),
+    };
+  } catch (e) { return null; }
+}
+
+/* 10분에 한 번만 (억지로면 지금 바로). 새로 들어간 건수를 돌려준다 */
+function boxSyncMail_(억지로) {
+  const 속성 = PropertiesService.getScriptProperties();
+  const 마지막 = +속성.getProperty('BOX_MAIL_AT') || 0;
+  if (!억지로 && Date.now() - 마지막 < BOX_MAIL_EVERY) return 0;
+  let 목록 = boxRead_();
+  const 전 = 목록.length;
+  boxFromMail_().forEach((q) => { 목록 = boxMerge_(목록, q); });
+  boxWrite_(목록);
+  속성.setProperty('BOX_MAIL_AT', String(Date.now()));
+  return 목록.length - 전;
+}
+
+/** 편집기에서 한 번 실행하세요 — 메일 읽기 권한을 주고, 지금까지 보낸 견적 메일을 보관함에 모읍니다. */
+function 보낸견적모으기() {
+  const n = boxSyncMail_(true);
+  Logger.log('보관함에 ' + n + '건을 더했습니다. 지금 모두 ' + boxRead_().length + '건입니다.');
+}
+
+// ── 행사 일정 · 체크리스트 ────────────────────────────────
+// 대표님과 직원이 같은 목록을 본다. 직원 암호는 스크립트 속성 CREW_PW,
+// 대표님 암호(BOX_PW)로도 열린다. 직원 암호로는 견적서 보관함이 열리지 않는다.
+function crewPw_() {
+  try { return String(PropertiesService.getScriptProperties().getProperty('CREW_PW') || ''); }
+  catch (e) { return ''; }
+}
+function crewCheck_(pw) {
+  const 직원 = crewPw_(), 사장 = boxPw_();
+  if (!직원 && !사장) throw new Error('일정 암호가 아직 설정되지 않았습니다 (스크립트 속성 CREW_PW)');
+  const 넣은 = String(pw || '');
+  if (넣은 && (넣은 === 직원 || 넣은 === 사장)) return;
+  throw new Error('암호가 맞지 않습니다');
+}
+function schedRead_() {
+  const it = dataFolder_().getFilesByName(SCHED_FILE);
+  if (!it.hasNext()) return [];
+  try {
+    const v = JSON.parse(it.next().getBlob().getDataAsString());
+    return Array.isArray(v) ? v : [];
+  } catch (e) { return []; }
+}
+function schedWrite_(목록) {
+  const 자른 = schedSort_(목록).slice(0, SCHED_MAX);
+  const s = JSON.stringify(자른);
+  const it = dataFolder_().getFilesByName(SCHED_FILE);
+  if (it.hasNext()) it.next().setContent(s);
+  else dataFolder_().createFile(SCHED_FILE, s, 'application/json');
+  return 자른;
+}
+/* 날짜가 빠른 행사부터. 날짜가 없는 것은 맨 뒤 */
+function schedSort_(목록) {
+  return 목록.slice().sort((a, b) => String(a.날짜 || '9999').localeCompare(String(b.날짜 || '9999')));
+}
+
+function 글_(v, n) { return String(v == null ? '' : v).slice(0, n); }
+
+function schedItem_(x, i) {
+  if (!x || typeof x !== 'object') return null;
+  const 이름 = 글_(x.이름, 120).trim();
+  if (!이름) return null;
+  return {
+    id:   글_(x.id, 24) || ('i' + i + Math.random().toString(36).slice(2, 6)),
+    이름: 이름,
+    메모: 글_(x.메모, 160),
+    출처: 글_(x.출처, 20),
+    됨:   !!x.됨,
+    누가: 글_(x.누가, 40),
+    때:   Math.max(0, parseInt(x.때, 10) || 0),
+  };
+}
+
+function schedClean_(e) {
+  if (!e || typeof e !== 'object') throw new Error('행사 내용이 비어 있습니다');
+  const 제목 = 글_(e.제목, 120).trim();
+  if (!제목) throw new Error('행사명을 적어 주세요');
+  return {
+    id:       글_(e.id, 24) || newId_(),
+    제목:     제목,
+    날짜:     글_(e.날짜, 20),      // 시작일
+    끝날짜:   글_(e.끝날짜, 20),    // 여러 날 하는 행사의 마지막 날 (하루면 비어 있다)
+    설치일:   글_(e.설치일, 20),    // 무대 · 장비를 세우는 날 (전날 설치 같은 때)
+    설치시간: 글_(e.설치시간, 20),  // 설치 시작 시각
+    집합:     글_(e.집합, 20),
+    시작:     글_(e.시작, 20),
+    장소:     글_(e.장소, 160),
+    고객:     글_(e.고객, 120),
+    담당:     글_(e.담당, 120),
+    우리담당: 글_(e.우리담당, 120),
+    인원:     글_(e.인원, 40),
+    비고:     글_(e.비고, 2000),
+    끝났나:   !!e.끝났나,
+    견적코드: 글_(e.견적코드, 20000),  // 이 행사를 만든 견적서 (quote.html 의 #q= 코드)
+  };
+}
+
+function schedList_(body) {
+  crewCheck_(body.pw);
+  return { ok: true, 목록: schedSort_(schedRead_()) };
+}
+
+/* 개요를 덮어쓴다. 항목을 같이 보내면 항목도 통째로 바꾼다(추가·삭제·순서) */
+function schedSave_(body) {
+  crewCheck_(body.pw);
+  const 새것 = schedClean_(body.행사);
+  const 목록 = schedRead_();
+  const i = 목록.findIndex(x => x && x.id === 새것.id);
+  const 이제 = Date.now();
+  const 누가 = 글_(body.누가, 40);
+  if (i < 0) {
+    새것.항목 = (Array.isArray(body.행사.항목) ? body.행사.항목 : []).map(schedItem_).filter(Boolean).slice(0, 200);
+    새것.만든때 = 이제; 새것.고친때 = 이제; 새것.고친이 = 누가;
+    목록.push(새것);
+  } else {
+    const 옛 = 목록[i];
+    새것.항목 = Array.isArray(body.행사.항목)
+      ? body.행사.항목.map(schedItem_).filter(Boolean).slice(0, 200)
+      : (옛.항목 || []);
+    새것.만든때 = 옛.만든때 || 이제;
+    새것.고친때 = 이제; 새것.고친이 = 누가;
+    목록[i] = 새것;
+  }
+  return { ok: true, id: 새것.id, 목록: schedWrite_(목록) };
+}
+
+/* 체크 하나만 바꾼다 — 둘이 동시에 만져도 서로의 글을 안 덮어쓴다 */
+function schedCheck_(body) {
+  crewCheck_(body.pw);
+  const id = 글_(body.id, 24), 항목 = 글_(body.항목, 24);
+  const 목록 = schedRead_();
+  const e = 목록.filter(x => x && x.id === id)[0];
+  if (!e) throw new Error('행사를 찾을 수 없습니다');
+  const it = (e.항목 || []).filter(x => x && x.id === 항목)[0];
+  if (!it) throw new Error('품목을 찾을 수 없습니다');
+  it.됨   = !!body.됨;
+  it.누가 = 글_(body.누가, 40);
+  it.때   = Date.now();
+  e.고친때 = it.때; e.고친이 = it.누가;
+  return { ok: true, 목록: schedWrite_(목록) };
+}
+
+function schedDel_(body) {
+  crewCheck_(body.pw);
+  const id = 글_(body.id, 24);
+  if (!id) throw new Error('지울 행사를 알 수 없습니다');
+  return { ok: true, 목록: schedWrite_(schedRead_().filter(x => x && x.id !== id)) };
+}
+
+// ── 드라이브 유틸 ─────────────────────────────────────────
+function rootFolder_() { return subFolder_(DriveApp.getRootFolder(), ROOT_FOLDER_NAME); }
+function dataFolder_() { return subFolder_(rootFolder_(), '_data'); }
+function subFolder_(parent, name) {
+  const it = parent.getFoldersByName(name);
+  return it.hasNext() ? it.next() : parent.createFolder(name);
+}
+function readRecord_(id) {
+  if (!/^[A-Za-z0-9_-]{4,40}$/.test(id)) return null;
+  const it = dataFolder_().getFilesByName(id + '.json');
+  if (!it.hasNext()) return null;
+  try { return JSON.parse(it.next().getBlob().getDataAsString()); } catch (e) { return null; }
+}
+function writeRecord_(rec) {
+  const it = dataFolder_().getFilesByName(rec.id + '.json');
+  if (it.hasNext()) it.next().setContent(JSON.stringify(rec));
+  else dataFolder_().createFile(rec.id + '.json', JSON.stringify(rec), 'application/json');
+}
+
+// ── 기타 유틸 ─────────────────────────────────────────────
+function newId_() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let s = ''; for (let i = 0; i < 8; i++) s += chars.charAt(Math.floor(Math.random() * chars.length));
+  return s;
+}
+function sha256_(s) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8)
+    .map(b => ('0' + (b & 0xff).toString(16)).slice(-2)).join('');
+}
+function stripApi_(c) { const o = JSON.parse(JSON.stringify(c)); delete o.api; return o; }
+function calcTotal_(c) {
+  const num = v => +String(v == null ? '' : v).replace(/[^0-9.-]/g, '') || 0;
+  let supply = 0;
+  (c.items || []).forEach(it => { if (it.price == null || it.price === '') return; supply += num(it.qty) * num(it.days || 1) * num(it.price); });
+  const disc = Math.min(supply, num(c.m && c.m.disc));
+  const base = supply - disc;
+  return base + Math.round(base * 0.1);
+}
+function safe_(v) { return v == null ? '' : String(v); }
+function kst_(iso) { try { return Utilities.formatDate(new Date(iso), 'Asia/Seoul', 'yyyy-MM-dd HH:mm:ss'); } catch (e) { return String(iso); } }
+function isEmail_(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(s || '')); }
+function uniq_(a) { return a.filter((v, i) => a.indexOf(v) === i); }
+function json_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }

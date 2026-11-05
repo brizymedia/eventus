@@ -185,8 +185,13 @@
 
   /* ========== 갤러리 · 라이트박스 ========== */
   var lb = $('#lb'), lbImg = $('#lbImg'), lbT = $('#lbTitle'), lbM = $('#lbMeta'), list = [], lbK = 0;
+  /* 관리자 모드 「사진 올리기」(upload.html)로 올린 사진 — photos 가지의 photos.json 을 현장사진 맨 앞에 합친다 */
+  var UP_LIST = 'https://raw.githubusercontent.com/brizymedia/eventus/photos/photos/photos.json';
+  var UP_IMG = 'https://cdn.jsdelivr.net/gh/brizymedia/eventus@photos/';
+  function srcT(w) { return w.u || 'assets/img/t/e' + pad(w.i) + '.webp'; }
+  function srcP(w) { return w.u || 'assets/img/p/e' + pad(w.i) + '.webp'; }
   function figHTML(w, k, big) {
-    return '<figure class="' + (big ? 'big ' : '') + 'reveal" data-k="' + k + '" data-c="' + w.c + '"><img src="assets/img/t/e' + pad(w.i) + '.webp" alt="' + esc(w.t) + '" loading="lazy" width="800" height="600"><figcaption>' + esc(w.t) + '</figcaption></figure>';
+    return '<figure class="' + (big ? 'big ' : '') + 'reveal" data-k="' + k + '" data-c="' + w.c + '"><img src="' + srcT(w) + '" alt="' + esc(w.t) + '" loading="lazy" width="800" height="600"><figcaption>' + esc(w.t) + '</figcaption></figure>';
   }
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function bindGallery(box) {
@@ -195,7 +200,7 @@
   function visible() { return $$('figure', $('#pfGrid') || $('#gal')).filter(function (f) { return !f.classList.contains('hide'); }).map(function (f) { return +f.getAttribute('data-k'); }); }
   function openLb(k) {
     var w = list[k]; if (!w || !lb) return; lbK = k;
-    lbImg.src = 'assets/img/p/e' + pad(w.i) + '.webp'; lbImg.alt = w.t; lbT.textContent = w.t; lbM.textContent = CATS[w.c] + ' · ' + w.e;
+    lbImg.src = srcP(w); lbImg.alt = w.t; lbT.textContent = w.t; lbM.textContent = [CATS[w.c] || '현장', w.e].filter(Boolean).join(' · ');
     lb.classList.add('on'); document.body.style.overflow = 'hidden';
   }
   function closeLb() { lb.classList.remove('on'); document.body.style.overflow = ''; }
@@ -217,24 +222,32 @@
     gal.innerHTML = pick.map(function (n, j) { return figHTML(WORKS[n - 1], n - 1, j === 0); }).join('');
     bindGallery(gal);
   }
-  // 현장사진 : 전체 + 필터
+  // 현장사진 : 전체 + 필터 (올린 사진이 있으면 맨 앞에 합친다)
   var pf = $('#pfGrid');
   if (pf) {
-    list = WORKS;
-    pf.innerHTML = WORKS.map(function (w, k) { return figHTML(w, k, false); }).join('');
-    bindGallery(pf);
-    var fl = $('#filters');
-    if (fl) {
-      var counts = {}; WORKS.forEach(function (w) { counts[w.c] = (counts[w.c] || 0) + 1; });
-      fl.innerHTML = '<button type="button" class="on" data-f="all">전체<small>' + WORKS.length + '</small></button>' + Object.keys(CATS).map(function (c) { return '<button type="button" data-f="' + c + '">' + CATS[c] + '<small>' + (counts[c] || 0) + '</small></button>'; }).join('');
-      $$('button', fl).forEach(function (b) {
-        b.addEventListener('click', function () {
-          $$('button', fl).forEach(function (x) { x.classList.remove('on'); }); b.classList.add('on');
-          var f = b.getAttribute('data-f');
-          $$('figure', pf).forEach(function (g) { g.classList.toggle('hide', f !== 'all' && g.getAttribute('data-c') !== f); g.classList.add('in'); });
+    var fl = $('#filters'), cur = 'all';
+    var filt = function () { $$('figure', pf).forEach(function (g) { g.classList.toggle('hide', cur !== 'all' && g.getAttribute('data-c') !== cur); g.classList.add('in'); }); };
+    var drawPf = function () {
+      pf.innerHTML = list.map(function (w, k) { return figHTML(w, k, false); }).join('');
+      bindGallery(pf);
+      if (fl) {
+        var counts = {}; list.forEach(function (w) { counts[w.c] = (counts[w.c] || 0) + 1; });
+        fl.innerHTML = '<button type="button" data-f="all">전체<small>' + list.length + '</small></button>' + Object.keys(CATS).map(function (c) { return '<button type="button" data-f="' + c + '">' + CATS[c] + '<small>' + (counts[c] || 0) + '</small></button>'; }).join('');
+        $$('button', fl).forEach(function (b) {
+          b.classList.toggle('on', b.getAttribute('data-f') === cur);
+          b.addEventListener('click', function () { cur = b.getAttribute('data-f'); $$('button', fl).forEach(function (x) { x.classList.toggle('on', x === b); }); filt(); });
         });
+      }
+      filt();
+    };
+    list = WORKS.slice(); drawPf();
+    fetch(UP_LIST + '?t=' + Math.floor(Date.now() / 300000), { cache: 'no-store' }).then(function (r) { return r.ok ? r.json() : null; }).then(function (j) {
+      if (!j || !j.photos || !j.photos.length) return;
+      var up = j.photos.filter(function (x) { return x && x.path; }).map(function (x) {
+        return { u: UP_IMG + x.path.split('/').map(encodeURIComponent).join('/'), t: x.event || '행사 현장', e: [x.place, (x.date || '').replace(/-/g, '.')].filter(Boolean).join(' · '), c: CATS[x.cat] ? x.cat : 'gear' };
       });
-    }
+      list = up.concat(WORKS); drawPf();
+    }).catch(function () {});
   }
   reveals = $$('.reveal:not(.in)'); checkReveal();
 
@@ -318,4 +331,18 @@
   }
 
   onScroll();
+})();
+
+/* ---------- 관리자 모드 — 바닥글 맨 끝 작은 메뉴 → office.html (대표 암호로 열림, 큰길브리지 2026-10-04) ---------- */
+(function () {
+  var cs = document.currentScript, base = cs && cs.src ? cs.src.replace(/assets\/app\.js(\?.*)?$/, '') : '';
+  function add() {
+    var ft = document.querySelector('footer'); if (!ft || ft.querySelector('.admin-entry')) return;
+    var d = document.createElement('div'); d.className = 'admin-entry';
+    d.style.cssText = 'text-align:center;padding:12px 0 16px;font-size:12px;line-height:1';
+    d.innerHTML = '<a href="' + base + 'office.html" rel="nofollow" style="color:inherit;opacity:.55;text-decoration:none;display:inline-flex;align-items:center;gap:5px">' +
+      '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>관리자 모드</a>';
+    ft.appendChild(d);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', add); else add();
 })();
