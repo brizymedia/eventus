@@ -31,8 +31,8 @@ CODE_PRE = 'EV-'                                    # 계약 번호 앞글자
 BLOG     = 'https://blog.naver.com/seoulite712'
 
 # 서버 주소 — 형님 구글 계정(gilauto325)으로 배포한 뒤 넣는다. 비어 있으면 관리자 모드가 「서버 연결 전」으로 안내
-CONTRACT_URL = ''
-GALLERY_URL  = ''
+CONTRACT_URL = 'https://script.google.com/macros/s/AKfycbyDLg9TRli31IRh7f0chU0x9j0CvLwSLgIvi1y6AKcyaAkWJt26mra8DE2x6PMehd21/exec'   # 2026-11-06 어대리 배포 (gilauto325)
+GALLERY_URL  = 'https://script.google.com/macros/s/AKfycbyxPhZLz_rBi1WI013DUlD0GOfnX9xnMtKoqPPb_-8WVXCYXOSPtICXnTsYc8aNmYzG/exec'   # 비밀번호는 서버 속성에만
 
 LOGO_FILE = 'assets/img/favicon.svg'                # 머리글에 쓰는 네모 마크
 MAIL_LOGO = 'https://brizymedia.github.io/eventus/assets/img/logo-able-white.png'   # 메일 머리(어두운 바탕용 흰 로고 PNG)
@@ -356,6 +356,9 @@ def port_servers():
                   "    // 서명본 사본을 항상 받을 주소 (계약서의 co.email 과 별개로 무조건 수신)\nconst MANAGER_EMAIL    = 'gilauto325@gmail.com'; // 관리하는 큰길브리지도 사본을 받는다 (빼려면 '' )\n", 1)
     c = c.replace('형님과 직원이', '대표님과 직원이').replace('형님 암호(BOX_PW)', '대표님 암호(BOX_PW)')
     assert 'MANAGER_EMAIL    =' in c, '계약 서버: MANAGER_EMAIL 넣을 자리를 못 찾음'
+    # 보낸 견적 메일 모으기: 큰길 견적 메일([큰길이벤트기획] …)이 이 회사 저장함에 섞이지 않게 제목 머리를 이 회사로 (2026-11-06 어대리 발견 — 같은 gilauto325 계정에서 돈다)
+    c = c.replace('/^\\[큰길이벤트기획\\]/', '/^\\[' + NAME + '\\]/').replace('「[큰길이벤트기획] … 견적서」', '「[' + NAME + '] … 견적서」')
+    assert '[큰길이벤트기획\\]' not in c, '계약 서버: 큰길 견적 메일 거르는 조건이 남음'
     write('apps-script/contract/Code.gs', c)
     g = open(os.path.join(SRC, 'apps-script/gallery/Code.gs'), encoding='utf-8').read()
     g = rep(g, [
@@ -383,12 +386,20 @@ def office():
         ]),
         ('홈페이지 · 검색', [
             ('stories/', '행사 이야기', '행사 한 편씩 준비 과정과 사진을 기록한 글입니다. 검색 · AI 검색에 잡히는 글입니다.'),
+            ('blog/', '행사 준비 블로그', '지역 · 행사 준비 글 모음입니다. 검색 · AI 검색에 잡히는 글입니다.'),
             ('areas/', '지역 페이지', '지역별 이동 시간과 그 지역에서 한 행사. 「○○ 행사대행」 검색을 노립니다.'),
             ('llms.txt', 'AI 검색 안내문 (llms.txt)', '챗GPT · 퍼플렉시티 같은 AI 가 회사 정보를 정확히 읽도록 정리한 글입니다.'),
             ('sitemap.xml', '사이트맵', '검색엔진에 알려 주는 페이지 목록입니다.'),
             ('https://www.ai-make.co.kr/stats/', '유입 현황', '어디서 몇 명이 들어왔는지(네이버 · 구글 · AI 검색 · 카톡) 큰길브리지가 함께 봅니다.'),
         ]),
     ]
+    # 이 사이트에 없는 페이지 카드는 뺀다(404 방지) — 유입 현황은 stats.js 를 단 사이트만 (2026-11-06 일반화)
+    idx = open(os.path.join(SITE, 'index.html'), encoding='utf-8').read()
+    def 있음(u):
+        if u.startswith('http'):
+            return 'stats.js' in idx if '/stats/' in u else True
+        return os.path.exists(os.path.join(SITE, u.split('?')[0]))
+    tools = [(t, [x for x in items if 있음(x[0])]) for t, items in tools]
     cards = ''
     for title, items in tools:
         cards += '<section class="grp"><h2>' + title + '</h2><div class="cards">'

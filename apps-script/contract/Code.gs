@@ -292,14 +292,14 @@ function boxDel_(body) {
 // ── 보낸 견적 메일에서 보관함 채우기 ──────────────────────
 // 견적서를 메일로 보내면 본문 「견적서 온라인으로 보기」 링크에 견적서 원본(#q= 코드)이 통째로 들어간다.
 // 보낸편지함에서 그 링크를 모아 보관함에 넣는다 — 「담기」를 안 눌러도 보낸 견적은 다 남는다.
-// 답장(Re:)은 빼고 「[큰길이벤트기획] … 견적서」 원본만 본다. 같은 견적서는 하나로 합친다.
+// 답장(Re:)은 빼고 「[이벤투스] … 견적서」 원본만 본다. 같은 견적서는 하나로 합친다.
 function boxFromMail_() {
   const 나 = String(Session.getEffectiveUser().getEmail() || '').toLowerCase();
   const 스레드 = GmailApp.search('in:sent "견적서 온라인으로 보기"', 0, 300);
   const 모은 = [];
   스레드.forEach((t) => t.getMessages().forEach((m) => {
     if (나 && String(m.getFrom()).toLowerCase().indexOf(나) < 0) return;
-    if (!/^\[큰길이벤트기획\]/.test(String(m.getSubject()))) return;
+    if (!/^\[이벤투스\]/.test(String(m.getSubject()))) return;
     const 찾음 = String(m.getPlainBody()).match(/quote\.html\?sent=1#q=([A-Za-z0-9_-]+)/);
     if (!찾음) return;
     const 항목 = boxFromCode_(찾음[1], m.getDate().getTime());
